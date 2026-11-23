@@ -30,7 +30,7 @@ _DAYS = {"type": "integer", "description": "回看自然日天数，默认 90", 
 TOOL_SCHEMAS = [
     _schema("list_reports", "列出近期券商研报元数据（标题、机构、评级、日期、EPS 预测、report_id），不含正文。",
             {"code": _CODE, "days": _DAYS}, ["code"]),
-    _schema("read_report", "读取一份研报的正文文本（已截断）。report_id 来自 list_reports。",
+    _schema("read_report", "读取一份研报的正文节选及原始 PDF 链接。report_id 来自 list_reports。",
             {"code": _CODE, "report_id": {"type": "string"},
              "max_chars": {"type": "integer", "description": "最多返回字数，默认 6000", "minimum": 500, "maximum": 20000}},
             ["code", "report_id"]),
@@ -65,7 +65,7 @@ class Toolkit:
         r = self.market.find_report(code, report_id)
         text = self.reader.read(r["pdf_url"], max_chars=max_chars)
         self.reads += 1
-        return {**_brief(r), "text": text}
+        return {**_brief(r), "pdf_url": r["pdf_url"], "text": text}
 
     def get_stock_info(self, code: str) -> dict[str, Any]:
         return self.market.stock_info(code)

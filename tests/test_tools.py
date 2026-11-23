@@ -24,7 +24,8 @@ def test_list_and_read(fake_ak):
     reports = json.loads(tk.call("list_reports", '{"code": "600519", "days": 30}'))
     assert [r["report_id"] for r in reports] == ["H3_A_1", "H3_B_1"]
     got = json.loads(tk.call("read_report", {"code": "600519", "report_id": "H3_A_1"}))
-    assert got["text"].startswith("正文 https://pdf.dfcfw.com")
+    assert got["pdf_url"] == "https://pdf.dfcfw.com/pdf/H3_A_1.pdf?1.pdf"
+    assert got["text"] == f"正文 {got['pdf_url']}"
 
 
 def test_read_limit(fake_ak):

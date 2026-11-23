@@ -33,7 +33,7 @@ rra ask 600519 "各家对直销渠道占比的判断有什么不同？"
 
 常用参数：`--max-reads` 最多阅读几篇正文（默认 6），`--max-steps` 工具调用轮数上限（默认 12），`-q` 不打印工具调用过程。
 
-`rra reports` 输出示例见 [examples/reports-600519.txt](examples/reports-600519.txt)。
+示例：[研报清单与统计](examples/reports-600519.txt) · [贵州茅台研报解读（真实 DeepSeek 输出的校订节选）](examples/digest-600519.md)。
 
 ## 架构
 
