@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-reports-agent"
+version = "0.1.0"
+description = "A 股研报解读 Agent：akshare 拉取券商研报，LLM 工具调用生成解读"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "akshare>=1.20.46",
+    "requests>=2.31",
+    "pypdf>=4.0",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+rra = "rra.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: 需要访问网络的集成测试（默认跳过，用 -m network 运行）"]
+addopts = "-m 'not network'"
