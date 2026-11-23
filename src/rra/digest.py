@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from . import analysis
 from .data import DataError, MarketData, normalize_code
+from .evidence import validate_sources
 from .llm import LLMClient
 from .pdf import ReportReader
 from .prompts import DIGEST_SYSTEM
@@ -95,16 +96,21 @@ def _render_findings(content: str | None, excerpts: dict[str, dict]) -> list[str
         for item in data[key][:4]:
             if not isinstance(item, dict):
                 continue
-            text, ids = item.get("text"), item.get("sources")
+            text = item.get("text")
             if not isinstance(text, str) or not text.strip() or len(text) > 240 or len(text.splitlines()) != 1:
-                continue
-            if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i in excerpts for i in ids):
                 continue
             if re.search(r"https?://", text, re.IGNORECASE):
                 continue
-            refs = "、".join(_citation(excerpts[i]) for i in dict.fromkeys(ids))
-            lines.append(f"- {_inline(text.strip())}（来源：{refs}）")
-        rendered.extend([f"### {heading}", "\n".join(lines) or "已读节选未提供可引用的要点。"])
+            sources = validate_sources(item.get("sources"), excerpts, comparison=key == "differences")
+            if not sources:
+                continue
+            lines.append(f"- {_inline(text.strip())}")
+            for source in sources:
+                citation = _citation(excerpts[source.report_id])
+                period = source.period or "未识别"
+                lines.append(f"  - {citation}（报告期：{period}）：「{_inline(source.quote)}」")
+        empty = "没有通过引文与报告期校验的要点。" if data[key] else "模型未从已读节选提取该类要点。"
+        rendered.extend([f"### {heading}", "\n".join(lines) or empty])
     return rendered
 
 
@@ -144,7 +150,8 @@ def build_digest(
             continue
         attempts += 1
         try:
-            text = reader.read(r["pdf_url"], max_chars=5000)
+            # 引文只允许来自抽取文本，不把截断提示混入可引用原文。
+            text = reader.full_text(r["pdf_url"])[:5000]
         except DataError:
             continue
         excerpts[r["report_id"]] = {**r, "text": text}

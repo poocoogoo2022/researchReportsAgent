@@ -68,7 +68,7 @@ def completion(message):
 def digest_data(fake_ak, monkeypatch):
     market = MarketData(NullCache(), ak=fake_ak)
     monkeypatch.setattr(cli, "MarketData", lambda cache: market)
-    monkeypatch.setattr(ReportReader, "read", lambda self, url, max_chars: "研报正文节选：直销增长。")
+    monkeypatch.setattr(ReportReader, "full_text", lambda self, url: "研报正文节选：直销增长。")
 
     class FixedDate(date):
         @classmethod
@@ -120,10 +120,11 @@ def test_digest_renders_its_own_tables_and_resolves_citations(model_transport, d
         [excerpt] = json.loads(body["messages"][-1]["content"])
         assert excerpt["report_id"] == "H3_A_1"
         assert "forecasts" not in excerpt and "pdf_url" not in excerpt
+        source = {"report_id": "H3_A_1", "quote": "研报正文节选：直销增长。", "period": None}
         findings = {"themes": [
-            {"text": "直销增长。", "sources": ["H3_A_1"]},
-            {"text": "未读报告的结论", "sources": ["H3_B_1"]},
-            {"text": "杜撰链接：https://example.test", "sources": ["H3_A_1"]},
+            {"text": "直销增长。", "sources": [source]},
+            {"text": "未读报告的结论", "sources": [{**source, "report_id": "H3_B_1"}]},
+            {"text": "杜撰链接：https://example.test", "sources": [source]},
             {"text": "无引用的结论", "sources": []},
         ], "differences": [], "risks": []}
         return completion({"role": "assistant", "content": json.dumps(findings)})
@@ -138,7 +139,8 @@ def test_digest_renders_its_own_tables_and_resolves_citations(model_transport, d
     assert "| 买入 | 1 |" in out and "| 增持 | 1 |" in out
     assert "| 2026 | 2 | 66.95 |" in out
     assert "| 中邮证券 | 2026-11-19 | 1.75 | 缺数据 | 缺数据 |" in out
-    assert "直销增长。（来源：[中邮证券（2026-11-19）](https://pdf.dfcfw.com/pdf/H3_A_1.pdf?1.pdf)）" in out
+    assert "- 直销增长。" in out
+    assert "[中邮证券（2026-11-19）](https://pdf.dfcfw.com/pdf/H3_A_1.pdf?1.pdf)（报告期：未识别）：「研报正文节选：直销增长。」" in out
     assert "未读报告的结论" not in out and "无引用的结论" not in out and "example.test" not in out
 
 
@@ -153,7 +155,7 @@ def test_digest_stats_only_without_key_or_prices(digest_data, monkeypatch, capsy
         pytest.fail("纯统计不应读取 PDF 或构建模型客户端")
 
     monkeypatch.setattr(digest_data, "price_history", no_prices)
-    monkeypatch.setattr(ReportReader, "read", unexpected_call)
+    monkeypatch.setattr(ReportReader, "full_text", unexpected_call)
     monkeypatch.setattr(openai, "OpenAI", unexpected_call)
     assert cli.main(["digest", "600519", "--days", "30", "--max-reads", "0"]) == 0
     out = capsys.readouterr().out
@@ -164,14 +166,14 @@ def test_digest_stats_only_without_key_or_prices(digest_data, monkeypatch, capsy
 def test_digest_no_pdf_does_not_call_model(digest_data, model_transport, monkeypatch, capsys):
     attempts = []
 
-    def no_pdf(self, url, max_chars):
+    def no_pdf(self, url):
         attempts.append(url)
         raise DataError("扫描件")
 
     def unexpected_call(request):
         pytest.fail("没有可用正文时不应调用模型")
 
-    monkeypatch.setattr(ReportReader, "read", no_pdf)
+    monkeypatch.setattr(ReportReader, "full_text", no_pdf)
     with model_transport(unexpected_call):
         assert cli.main(["digest", "600519", "--days", "30", "--max-reads", "1"]) == 0
     assert len(attempts) == 1
@@ -183,7 +185,7 @@ def test_digest_empty_window_does_not_fetch_prices_or_call_model(digest_data, mo
         pytest.fail("区间无研报时不应查行情、读 PDF 或调用模型")
 
     monkeypatch.setattr(digest_data, "price_history", unexpected_call)
-    monkeypatch.setattr(ReportReader, "read", unexpected_call)
+    monkeypatch.setattr(ReportReader, "full_text", unexpected_call)
     with model_transport(unexpected_call):
         assert cli.main(["digest", "600519", "--days", "1"]) == 0
     assert "区间内没有可用研报" in capsys.readouterr().out
