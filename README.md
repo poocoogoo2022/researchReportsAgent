@@ -11,8 +11,10 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-cp .env.example .env   # 填入 RRA_API_KEY
+source .venv/bin/activate
 ```
+
+`reports` 不需要 API Key。要使用 `digest` / `ask`，请在项目根目录将 `.env.example` 复制为 `.env`（如果已有 `.env`，直接编辑），把 `RRA_API_KEY` 替换为真实的 Key。不要把 Key 粘贴到聊天或提交到 Git。
 
 LLM 使用 OpenAI 兼容接口，默认 DeepSeek（`deepseek-chat`）。改 `RRA_BASE_URL` 和 `RRA_MODEL` 可以换成其他支持 tool calling 的兼容服务。
 

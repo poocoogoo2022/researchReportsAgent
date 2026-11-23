@@ -68,15 +68,19 @@ def cmd_reports(market: MarketData, code: str, days: int) -> None:
 
 
 def cmd_agent(args, cfg: Config, toolkit: Toolkit) -> int:
+    api_key = (cfg.api_key or "").strip()
+    if not api_key or api_key == "sk-xxxxxxxxxxxxxxxxxxxxxxxx":
+        print("请在本项目的 .env 中设置有效的 RRA_API_KEY（参见 .env.example）", file=sys.stderr)
+        return 2
+
+    from openai import APIConnectionError, APIError, APIStatusError, AuthenticationError
+
     from .agent import Agent, print_step
     from .llm import OpenAICompatClient
     from .prompts import ASK_TASK, DIGEST_TASK, SYSTEM
 
-    if not cfg.api_key:
-        print("缺少 RRA_API_KEY，请参考 .env.example 配置", file=sys.stderr)
-        return 2
     today = toolkit.today.isoformat()
-    llm = OpenAICompatClient(cfg.api_key, cfg.base_url, cfg.model)
+    llm = OpenAICompatClient(api_key, cfg.base_url, cfg.model)
     agent = Agent(llm, toolkit, SYSTEM.format(today=today), max_steps=args.max_steps,
                   on_step=None if args.quiet else print_step)
     if args.command == "digest":
@@ -84,7 +88,23 @@ def cmd_agent(args, cfg: Config, toolkit: Toolkit) -> int:
     else:
         task = ASK_TASK.format(code=args.code, days=args.days, question=args.question)
 
-    result = agent.run(task)
+    try:
+        result = agent.run(task)
+    except AuthenticationError:
+        print("模型服务鉴权失败，请检查 RRA_API_KEY 和 RRA_BASE_URL 是否匹配", file=sys.stderr)
+        return 1
+    except APIConnectionError:
+        print("无法连接模型服务，请检查网络及 RRA_BASE_URL 后重试", file=sys.stderr)
+        return 1
+    except APIStatusError as e:
+        print(f"模型服务请求失败（HTTP {e.status_code}），请检查额度、模型配置或稍后重试", file=sys.stderr)
+        return 1
+    except APIError:
+        print("模型服务返回异常，请检查接口兼容性或稍后重试", file=sys.stderr)
+        return 1
+    if not result.answer.strip():
+        print("模型未返回正文，未生成报告", file=sys.stderr)
+        return 1
     if not args.quiet:
         print(f"  工具调用 {len(result.steps)} 次，token 用量 {result.usage}", file=sys.stderr)
     if getattr(args, "output", None):
