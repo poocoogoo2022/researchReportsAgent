@@ -115,8 +115,16 @@ class MarketData:
         return self.cache.get_json("reports", code, REPORTS_TTL, fetch)
 
     def list_reports(self, code: str, days: int = 90, today: date | None = None) -> list[dict[str, Any]]:
-        since = ((today or date.today()) - timedelta(days=days)).isoformat()
-        return [r for r in self.all_reports(code) if r["date"] >= since]
+        today = today or date.today()
+        since = (today - timedelta(days=days)).isoformat()
+        until = today.isoformat()
+        return [r for r in self.all_reports(code) if since <= r["date"] <= until]
+
+    def price_history_for_reports(self, code: str, reports: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
+        if not reports:
+            return []
+        start = date.fromisoformat(min(r["date"] for r in reports)) - timedelta(days=10)
+        return self.price_history(code, start, today)
 
     def find_report(self, code: str, report_id: str) -> dict[str, Any]:
         for r in self.all_reports(code):

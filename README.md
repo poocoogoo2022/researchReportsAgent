@@ -14,7 +14,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-`reports` 不需要 API Key。要使用 `digest` / `ask`，请在项目根目录将 `.env.example` 复制为 `.env`（如果已有 `.env`，直接编辑），把 `RRA_API_KEY` 替换为真实的 Key。不要把 Key 粘贴到聊天或提交到 Git。
+`reports` 和 `digest --max-reads 0` 不需要 API Key。要生成正文归纳或使用 `ask`，请在项目根目录将 `.env.example` 复制为 `.env`（如果已有 `.env`，直接编辑），把 `RRA_API_KEY` 替换为真实的 Key。不要把 Key 粘贴到聊天或提交到 Git。
 
 LLM 使用 OpenAI 兼容接口，默认 DeepSeek（`deepseek-chat`）。改 `RRA_BASE_URL` 和 `RRA_MODEL` 可以换成其他支持 tool calling 的兼容服务。
 
@@ -27,38 +27,35 @@ rra reports 600519 --days 30
 # 生成完整解读，保存为 Markdown
 rra digest 600519 --days 60 -o reports/600519.md
 
+# 只生成统计 Markdown，不读取正文、不调用模型
+rra digest 600519 --days 60 --max-reads 0 -o reports/600519-stats.md
+
 # 自由提问
 rra ask 600519 "各家对直销渠道占比的判断有什么不同？"
 ```
 
-常用参数：`--max-reads` 最多阅读几篇正文（默认 6），`--max-steps` 工具调用轮数上限（默认 12），`-q` 不打印工具调用过程。
+`--max-reads` 控制正文读取上限（默认 6）；`ask --max-steps` 控制问答的工具调用轮数（默认 12）。`digest` 使用固定流程，不再需要 `--max-steps`。
 
 示例：[研报清单与统计](examples/reports-600519.txt) · [贵州茅台研报解读（真实 DeepSeek 输出的校订节选）](examples/digest-600519.md)。
 
 ## 架构
 
 ```
-CLI (reports / digest / ask)
-   │
-   ▼
-Agent 循环 ──────► LLM（OpenAI 兼容 tool calling，测试中替换为 ScriptedLLM）
-   │ tool_calls
-   ▼
-Toolkit：list_reports / read_report / get_stock_info /
-         get_rating_summary / get_eps_consensus / get_post_report_performance
-   │
-   ├─ data.py      akshare 封装，字段规整，东财行情失败时切腾讯日线
-   ├─ pdf.py       研报 PDF 下载、抽文本、截断
-   ├─ analysis.py  评级变化、EPS 一致预期、研报后涨跌幅（纯函数）
-   └─ cache.py     文件缓存（研报列表 6h，行情 1h，PDF 正文永久）
+CLI
+├─ reports → data.py + analysis.py → 列表与统计
+├─ digest  → digest.py → 固定统计表 + 带出处的正文归纳 → Markdown
+│                          └─ 有可读正文时，一次模型调用，不开放工具
+└─ ask     → agent.py + tools.py ↔ LLM → 自由问答
+
+共享模块：data.py（akshare）、analysis.py（纯计算）、pdf.py（正文抽取）、cache.py（文件缓存）
 ```
 
 设计要点：
 
-- 统计数字由代码计算后交给模型，提示词要求模型直接引用，减少模型编造数字。
-- 工具出错（接口限流、找不到研报、参数错误）时把错误作为文本返回给模型，循环不中断。
-- 成本控制：正文截断、单次运行限制阅读篇数、PDF 正文永久缓存。
-- 达到步数上限时强制模型基于已有信息作答。
+- `digest` 的评级、EPS 和涨跌幅表都由程序直接生成，不由模型复述。模型只归纳正文节选；程序检查引用 ID 是否属于已读样本，再填入机构、日期与 PDF 链接。引用可追溯不等于模型对原文的解释已经过核验。
+- `digest` 在行情或正文不可用时标明缺项；模型请求失败或返回无效结构时不会覆盖已有报告。
+- `ask` 保留工具调用循环，工具错误作为结果交回模型处理，达到轮数上限后要求模型基于已有信息作答。
+- 成本控制：正文截断、限制读取篇数、缓存 PDF 正文。
 
 ## 数据源
 

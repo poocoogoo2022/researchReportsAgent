@@ -12,7 +12,8 @@ else:
 
 from rra import cli
 from rra.cache import NullCache
-from rra.data import MarketData
+from rra.data import DataError, MarketData
+from rra.pdf import ReportReader
 
 
 def test_reports_command(fake_ak, capsys, monkeypatch):
@@ -63,9 +64,11 @@ def completion(message):
     })
 
 
-@pytest.mark.parametrize("command", ["digest", "ask"])
-def test_agent_commands_with_mock_model_http(command, model_transport, fake_ak, monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(cli, "MarketData", lambda cache: MarketData(cache, ak=fake_ak))
+@pytest.fixture
+def digest_data(fake_ak, monkeypatch):
+    market = MarketData(NullCache(), ak=fake_ak)
+    monkeypatch.setattr(cli, "MarketData", lambda cache: market)
+    monkeypatch.setattr(ReportReader, "read", lambda self, url, max_chars: "研报正文节选：直销增长。")
 
     class FixedDate(date):
         @classmethod
@@ -73,18 +76,22 @@ def test_agent_commands_with_mock_model_http(command, model_transport, fake_ak, 
             return cls(2026, 11, 23)
 
     monkeypatch.setattr(cli, "date", FixedDate)
-    requests = []
+    return market
+
+
+def test_ask_still_executes_model_tools(model_transport, digest_data, capsys):
+    calls = []
     question = "最近机构怎样看盈利？"
     answer = "# 模拟解读\n中邮证券（2026-11-19）发布研报。"
 
     def handler(request):
         assert request.url.path == "/chat/completions"
         body = json.loads(request.content)
-        requests.append(body)
+        calls.append(body)
         assert body["model"] == "test-model"
         assert any(t["function"]["name"] == "list_reports" for t in body["tools"])
-        if len(requests) == 1:
-            assert (question if command == "ask" else "生成一份研报解读") in body["messages"][-1]["content"]
+        if len(calls) == 1:
+            assert question in body["messages"][-1]["content"]
             return completion({"role": "assistant", "tool_calls": [{
                 "id": "call_1", "type": "function", "function": {
                     "name": "list_reports", "arguments": '{"code":"600519","days":30}',
@@ -95,24 +102,108 @@ def test_agent_commands_with_mock_model_http(command, model_transport, fake_ak, 
         assert [r["org"] for r in json.loads(message["content"])] == ["中邮证券", "太平洋"]
         return completion({"role": "assistant", "content": answer})
 
-    output = tmp_path / "reports" / "out.md"
-    args = ["-o", str(output)] if command == "digest" else [question, "-q"]
     with model_transport(handler):
-        assert cli.main([command, "600519", "--days", "30", *args]) == 0
+        assert cli.main(["ask", "600519", question, "--days", "30", "-q"]) == 0
     captured = capsys.readouterr()
-    assert len(requests) == 2
+    assert len(calls) == 2
     assert captured.out == answer + "\n"
-    if command == "digest":
-        assert output.read_text(encoding="utf-8") == captured.out
-    else:
-        assert not captured.err
+    assert not captured.err
 
 
-@pytest.mark.parametrize("status, expected", [(401, "鉴权失败"), (402, "HTTP 402"), (200, "未返回正文")])
-def test_digest_does_not_write_output_on_model_failure(status, expected, model_transport, tmp_path, capsys):
+def test_digest_renders_its_own_tables_and_resolves_citations(model_transport, digest_data, tmp_path, capsys):
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        assert "tools" not in body
+        [excerpt] = json.loads(body["messages"][-1]["content"])
+        assert excerpt["report_id"] == "H3_A_1"
+        assert "forecasts" not in excerpt and "pdf_url" not in excerpt
+        findings = {"themes": [
+            {"text": "直销增长。", "sources": ["H3_A_1"]},
+            {"text": "未读报告的结论", "sources": ["H3_B_1"]},
+            {"text": "杜撰链接：https://example.test", "sources": ["H3_A_1"]},
+            {"text": "无引用的结论", "sources": []},
+        ], "differences": [], "risks": []}
+        return completion({"role": "assistant", "content": json.dumps(findings)})
+
+    output = tmp_path / "reports" / "out.md"
+    with model_transport(handler):
+        assert cli.main(["digest", "600519", "--days", "30", "--max-reads", "1", "-o", str(output)]) == 0
+    assert len(calls) == 1
+    out = capsys.readouterr().out
+    assert output.read_text(encoding="utf-8") == out
+    assert "区间内有 2 家机构发布 2 份研报" in out
+    assert "| 买入 | 1 |" in out and "| 增持 | 1 |" in out
+    assert "| 2026 | 2 | 66.95 |" in out
+    assert "| 中邮证券 | 2026-11-19 | 1.75 | 缺数据 | 缺数据 |" in out
+    assert "直销增长。（来源：[中邮证券（2026-11-19）](https://pdf.dfcfw.com/pdf/H3_A_1.pdf?1.pdf)）" in out
+    assert "未读报告的结论" not in out and "无引用的结论" not in out and "example.test" not in out
+
+
+def test_digest_stats_only_without_key_or_prices(digest_data, monkeypatch, capsys):
+    monkeypatch.delenv("RRA_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+
+    def no_prices(*args):
+        raise DataError("行情限流")
+
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("纯统计不应读取 PDF 或构建模型客户端")
+
+    monkeypatch.setattr(digest_data, "price_history", no_prices)
+    monkeypatch.setattr(ReportReader, "read", unexpected_call)
+    monkeypatch.setattr(openai, "OpenAI", unexpected_call)
+    assert cli.main(["digest", "600519", "--days", "30", "--max-reads", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "66.95" in out and "日线行情暂不可用" in out
+    assert "本次只生成统计，未读取研报正文" in out
+
+
+def test_digest_no_pdf_does_not_call_model(digest_data, model_transport, monkeypatch, capsys):
+    attempts = []
+
+    def no_pdf(self, url, max_chars):
+        attempts.append(url)
+        raise DataError("扫描件")
+
+    def unexpected_call(request):
+        pytest.fail("没有可用正文时不应调用模型")
+
+    monkeypatch.setattr(ReportReader, "read", no_pdf)
+    with model_transport(unexpected_call):
+        assert cli.main(["digest", "600519", "--days", "30", "--max-reads", "1"]) == 0
+    assert len(attempts) == 1
+    assert "未能读取可用的研报正文" in capsys.readouterr().out
+
+
+def test_digest_empty_window_does_not_fetch_prices_or_call_model(digest_data, model_transport, monkeypatch, capsys):
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("区间无研报时不应查行情、读 PDF 或调用模型")
+
+    monkeypatch.setattr(digest_data, "price_history", unexpected_call)
+    monkeypatch.setattr(ReportReader, "read", unexpected_call)
+    with model_transport(unexpected_call):
+        assert cli.main(["digest", "600519", "--days", "1"]) == 0
+    assert "区间内没有可用研报" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag, value", [("--days", "0"), ("--days", "731"), ("--max-reads", "-1"), ("--max-reads", "21")])
+def test_digest_rejects_out_of_range_arguments(flag, value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["digest", "600519", flag, value])
+    assert exc.value.code == 2
+    assert flag in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("status, expected", [(401, "鉴权失败"), (402, "HTTP 402"), (200, "未返回正文"), (201, "正文结构不符合要求")])
+def test_digest_does_not_write_output_on_model_failure(status, expected, model_transport, digest_data, tmp_path, capsys):
     def handler(request):
         if status == 200:
             return completion({"role": "assistant", "content": " "})
+        if status == 201:
+            return completion({"role": "assistant", "content": '{"themes": [], "statistics": "伪造表格"}'})
         return httpx.Response(status, json={"error": {"message": "provider error details"}})
 
     output = tmp_path / "out.md"

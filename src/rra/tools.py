@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 from . import analysis
@@ -78,10 +78,7 @@ class Toolkit:
 
     def get_post_report_performance(self, code: str, days: int = 90) -> list[dict[str, Any]]:
         reports = self.market.list_reports(code, days, today=self.today)
-        if not reports:
-            return []
-        start = date.fromisoformat(min(r["date"] for r in reports)) - timedelta(days=10)
-        prices = self.market.price_history(code, start, self.today)
+        prices = self.market.price_history_for_reports(code, reports, self.today)
         return analysis.post_report_performance(reports, prices)
 
     # --- 分发 ---
